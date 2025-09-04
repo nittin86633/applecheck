@@ -17,9 +17,9 @@ from flask import Flask, render_template_string, request, redirect, url_for
 BASE_URL = "https://www.apple.com/in/shop/fulfillment-messages"
 PRODUCTS_FILE = "products.json"
 
-# Telegram config (fill your values here)
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+# Telegram config (fill with your details)
+TELEGRAM_TOKEN = "8174420585:AAEJwd6t6iLW8DmzTySOM70AAzO5vqfoflc"
+CHAT_ID = "884634752"
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -30,6 +30,9 @@ DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.apple.com/",
 }
+
+# In-memory cache for latest statuses
+latest_status = {}
 
 # ==========================
 # Helpers
@@ -95,14 +98,30 @@ def background_checker():
             try:
                 data = fetch_availability(product["pincode"], product["model"])
                 rows = parse_pickup_status(data)
+
+                # Default unavailable
+                product_status = "unavailable"
+                product_msg = "No nearby stores found"
+
                 for r in rows:
-                    status = f"{product['name']} ({product['model']}) @ {r['store']} [{r['city']}] → {r['pickupDisplay'].upper()} : {r['quote']}\n{product['link']}"
-                    print(status)
+                    product_status = r["pickupDisplay"]
+                    product_msg = f"{r['store']} ({r['city']}) → {r['pickupDisplay'].upper()} : {r['quote']}"
                     if r["pickupDisplay"] == "available":
-                        send_telegram_message("✅ IN STOCK!\n" + status)
+                        send_telegram_message(
+                            f"✅ IN STOCK!\n{product['name']} ({product['model']})\n{product_msg}\n{product['link']}"
+                        )
+                        break  # if available found, stop checking other stores
+
+                # Save latest status
+                latest_status[product["model"]] = {
+                    "status": product_status,
+                    "message": product_msg,
+                }
+
             except Exception as e:
-                print("Error checking:", product, e)
-            time.sleep(2)  # 2 second gap per product
+                latest_status[product["model"]] = {"status": "error", "message": str(e)}
+
+            time.sleep(2)  # 2 sec gap per product
 
 # ==========================
 # Flask App
@@ -133,6 +152,9 @@ def index():
             table { border-collapse: collapse; width: 100%; margin-top: 20px; }
             th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
             th { background: #f2f2f2; }
+            .available { color: green; font-weight: bold; }
+            .unavailable { color: red; font-weight: bold; }
+            .error { color: orange; font-weight: bold; }
             .form-section { margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; }
         </style>
     </head>
@@ -155,6 +177,8 @@ def index():
                 <th>Model</th>
                 <th>Link</th>
                 <th>Pincode</th>
+                <th>Current Status</th>
+                <th>Action</th>
             </tr>
             {% for p in products %}
             <tr>
@@ -162,13 +186,28 @@ def index():
                 <td>{{p.model}}</td>
                 <td><a href="{{p.link}}" target="_blank">View</a></td>
                 <td>{{p.pincode}}</td>
+                <td class="{{latest_status.get(p.model, {}).get('status', 'unknown')}}">
+                    {{latest_status.get(p.model, {}).get('message', 'Checking...')}}
+                </td>
+                <td>
+                    <form method="post" action="{{ url_for('delete_product', model=p.model) }}">
+                        <button type="submit">Delete</button>
+                    </form>
+                </td>
             </tr>
             {% endfor %}
         </table>
     </body>
     </html>
     """
-    return render_template_string(template, products=products)
+    return render_template_string(template, products=products, latest_status=latest_status)
+
+@app.route("/delete/<model>", methods=["POST"])
+def delete_product(model):
+    products = load_products()
+    products = [p for p in products if p["model"] != model]
+    save_products(products)
+    return redirect(url_for("index"))
 
 # ==========================
 # Run App
