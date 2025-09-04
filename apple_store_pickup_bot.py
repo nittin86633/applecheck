@@ -18,8 +18,8 @@ BASE_URL = "https://www.apple.com/in/shop/fulfillment-messages"
 PRODUCTS_FILE = "products.json"
 
 # Telegram config
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-CHAT_ID = "YOUR_CHAT_ID"
+TELEGRAM_TOKEN = "8174420585:AAEJwd6t6iLW8DmzTySOM70AAzO5vqfoflc"
+CHAT_ID = "884634752"
 
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
