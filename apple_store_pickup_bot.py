@@ -6,9 +6,9 @@ Runs on port 5001
 
 import os
 import json
-import time
 import threading
 import requests
+import logging
 from flask import Flask, render_template_string, request, redirect, url_for
 
 # ==========================
@@ -18,8 +18,8 @@ BASE_URL = "https://www.apple.com/in/shop/fulfillment-messages"
 PRODUCTS_FILE = "products.json"
 
 # Telegram config
-TELEGRAM_TOKEN = "8174420585:AAEJwd6t6iLW8DmzTySOM70AAzO5vqfoflc"
-CHAT_ID = "884634752"
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
 
 DEFAULT_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -31,6 +31,19 @@ DEFAULT_HEADERS = {
 
 # In-memory cache for latest statuses
 latest_status = {}
+
+# ==========================
+# Logging Setup
+# ==========================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("apple_checker.log", encoding="utf-8"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 # ==========================
@@ -55,7 +68,7 @@ def send_telegram_message(text):
     try:
         requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
     except Exception as e:
-        print("Telegram error:", e)
+        logger.error(f"Telegram error: {e}")
 
 
 def fetch_availability(pincode, model, timeout=20):
@@ -104,31 +117,35 @@ def background_checker():
         for product in products:
             if not product.get("enabled", True):
                 latest_status[product["model"]] = {"status": "disabled", "message": "Disabled by user"}
+                logger.info(f"⏸ Skipped (disabled): {product['name']} ({product['model']})")
                 continue
 
             try:
+                logger.info(f"🔍 Checking: {product['name']} ({product['model']}) at {product['pincode']}")
                 data = fetch_availability(product["pincode"], product["model"])
                 rows = parse_pickup_status(data)
 
-                # Default unavailable
                 product_status = "unavailable"
                 product_msg = "No nearby stores found"
 
                 for r in rows:
                     product_status = r["pickupDisplay"]
                     product_msg = f"{r['store']} ({r['city']}) → {r['pickupDisplay'].upper()} : {r['quote']}"
+                    logger.info(f"📦 Result: {product_msg}")
+
                     if r["pickupDisplay"] == "available":
-                        send_telegram_message(
-                            f"✅ IN STOCK!\n{product['name']} ({product['model']})\n{product_msg}\n{product['link']}"
-                        )
+                        msg = f"✅ IN STOCK!\n{product['name']} ({product['model']})\n{product_msg}\n{product['link']}"
+                        send_telegram_message(msg)
+                        logger.info(f"📲 Telegram sent: {msg}")
                         break
 
                 latest_status[product["model"]] = {"status": product_status, "message": product_msg}
 
             except Exception as e:
                 latest_status[product["model"]] = {"status": "error", "message": str(e)}
+                logger.error(f"❌ Error for {product['name']} ({product['model']}): {e}")
 
-            time.sleep(2)  # 2 sec gap per product
+        # ⚡️ No sleep here — it immediately restarts checking loop
 
 
 # ==========================
