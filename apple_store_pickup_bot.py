@@ -1,127 +1,265 @@
-from flask import Flask, render_template, request, redirect, url_for
-import json, os, requests, threading, time
-from dotenv import load_dotenv
+#!/usr/bin/env python3
+"""
+Apple Store Pickup Checker (India) - Web UI + Telegram Notifications
+Runs on port 5001
+"""
 
-app = Flask(__name__)
-load_dotenv()
+import os
+import json
+import time
+import threading
+import requests
+from flask import Flask, render_template_string, request, redirect, url_for
 
+# ==========================
+# Config
+# ==========================
+BASE_URL = "https://www.apple.com/in/shop/fulfillment-messages"
 PRODUCTS_FILE = "products.json"
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# ---------------- Utility ----------------
+# Telegram config
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
+
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.apple.com/",
+}
+
+# In-memory cache for latest statuses
+latest_status = {}
+
+
+# ==========================
+# Helpers
+# ==========================
 def load_products():
     if not os.path.exists(PRODUCTS_FILE):
         return []
-    with open(PRODUCTS_FILE, "r") as f:
+    with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_products(products):
-    with open(PRODUCTS_FILE, "w") as f:
-        json.dump(products, f, indent=2)
 
-def check_availability(product):
-    try:
-        url = (
-            f"https://www.apple.com/in/shop/fulfillment-messages"
-            f"?fae=true&little=false&parts.0={product['model']}&mts.0=regular&fts=true"
-        )
-        response = requests.get(url).json()
-        stores = response.get("body", {}).get("content", {}).get("pickupMessage", {}).get("stores", [])
-        if not stores:
-            return "❌ Not Available"
-        available = any(
-            store.get("partsAvailability", {})
-                 .get(product['model'], {})
-                 .get("pickupDisplay") == "available"
-            for store in stores
-        )
-        return "✅ Available" if available else "❌ Not Available"
-    except Exception as e:
-        return f"Error: {e}"
+def save_products(products):
+    with open(PRODUCTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(products, f, indent=2, ensure_ascii=False)
+
 
 def send_telegram_message(text):
-    if not BOT_TOKEN or not CHAT_ID:
+    if not TELEGRAM_TOKEN or not CHAT_ID:
         return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={
-                "chat_id": CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML"
-            }
-        )
+        requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
     except Exception as e:
         print("Telegram error:", e)
 
-# ---------------- Background Checker ----------------
-last_status = {}
 
+def fetch_availability(pincode, model, timeout=20):
+    params = {"searchNearby": "true", "location": pincode, "pl": "true", "mt": "compact"}
+    params["parts.0"] = model
+    resp = requests.get(BASE_URL, params=params, headers=DEFAULT_HEADERS, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def parse_pickup_status(data):
+    try:
+        stores = data["body"]["content"]["pickupMessage"]["stores"]
+    except Exception:
+        stores = []
+
+    results = []
+    for store in stores:
+        store_name = store.get("storeName") or store.get("name")
+        city = store.get("city") or store.get("storeCity")
+        per_sku = store.get("partsAvailability", {})
+        for sku, info in per_sku.items():
+            pickup_display = info.get("pickupDisplay") or info.get("pickupType")
+            quote = (
+                info.get("pickupSearchQuote")
+                or info.get("messageTypes", {}).get("availability", {}).get("storeSelectionEnabledMessage")
+            )
+            results.append(
+                {
+                    "store": store_name,
+                    "city": city,
+                    "model": sku,
+                    "pickupDisplay": str(pickup_display).lower() if isinstance(pickup_display, str) else pickup_display,
+                    "quote": quote,
+                }
+            )
+    return results
+
+
+# ==========================
+# Background Checker
+# ==========================
 def background_checker():
-    global last_status
     while True:
         products = load_products()
-        for p in products:
-            if not p.get("enabled", True):
+        for product in products:
+            if not product.get("enabled", True):
+                latest_status[product["model"]] = {"status": "disabled", "message": "Disabled by user"}
                 continue
 
-            status = check_availability(p)
-            if status == "✅ Available" and last_status.get(p["model"]) != "✅ Available":
-                message = (
-                    f"📢 <b>{p['name']}</b> is now <b>Available</b>!\n\n"
-                    f"🔗 {p['link']}\n"
-                    f"📦 Model: {p['model']}\n"
-                    f"📍 Pincode: {p['pincode']}"
-                )
-                send_telegram_message(message)
+            try:
+                data = fetch_availability(product["pincode"], product["model"])
+                rows = parse_pickup_status(data)
 
-            last_status[p["model"]] = status
+                # Default unavailable
+                product_status = "unavailable"
+                product_msg = "No nearby stores found"
 
-        time.sleep(2)
+                for r in rows:
+                    product_status = r["pickupDisplay"]
+                    product_msg = f"{r['store']} ({r['city']}) → {r['pickupDisplay'].upper()} : {r['quote']}"
+                    if r["pickupDisplay"] == "available":
+                        send_telegram_message(
+                            f"✅ IN STOCK!\n{product['name']} ({product['model']})\n{product_msg}\n{product['link']}"
+                        )
+                        break
 
-# ---------------- Routes ----------------
-@app.route("/")
+                latest_status[product["model"]] = {"status": product_status, "message": product_msg}
+
+            except Exception as e:
+                latest_status[product["model"]] = {"status": "error", "message": str(e)}
+
+            time.sleep(2)  # 2 sec gap per product
+
+
+# ==========================
+# Flask App
+# ==========================
+app = Flask(__name__)
+
+@app.route("/", methods=["GET", "POST"])
 def index():
     products = load_products()
-    for p in products:
-        if p.get("enabled", True):
-            p["status"] = check_availability(p)
-        else:
-            p["status"] = "⏸ Disabled"
-    return render_template("index.html", products=products)
 
-@app.route("/add", methods=["POST"])
-def add_product():
+    if request.method == "POST":
+        # Add new product
+        name = request.form.get("name").strip()
+        model = request.form.get("model").strip()
+        link = request.form.get("link").strip()
+        pincode = request.form.get("pincode").strip()
+        products.append({"name": name, "model": model, "link": link, "pincode": pincode, "enabled": True})
+        save_products(products)
+        return redirect(url_for("index"))
+
+    template = """
+    <!doctype html>
+    <html>
+    <head>
+        <title>Apple Pickup Checker</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    </head>
+    <body class="bg-light">
+    <div class="container py-4">
+        <h1 class="mb-4">🍎 Apple Store Pickup Checker (India)</h1>
+
+        <div class="card mb-4">
+            <div class="card-header">➕ Add New Product</div>
+            <div class="card-body">
+                <form method="post" class="row g-3">
+                    <div class="col-md-3">
+                        <input class="form-control" placeholder="Product Name" name="name" required>
+                    </div>
+                    <div class="col-md-3">
+                        <input class="form-control" placeholder="Model No (SKU)" name="model" required>
+                    </div>
+                    <div class="col-md-3">
+                        <input class="form-control" placeholder="Product Link" name="link" required>
+                    </div>
+                    <div class="col-md-2">
+                        <input class="form-control" placeholder="Pincode" name="pincode" required>
+                    </div>
+                    <div class="col-md-1">
+                        <button class="btn btn-primary w-100">Add</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <h2>📦 Saved Products</h2>
+        <table class="table table-bordered table-hover bg-white">
+            <thead class="table-light">
+                <tr>
+                    <th>Name</th>
+                    <th>Model</th>
+                    <th>Pincode</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for p in products %}
+                {% set status = latest_status.get(p['model'], {}).get('status', 'checking') %}
+                {% set message = latest_status.get(p['model'], {}).get('message', 'Checking...') %}
+                <tr>
+                    <td><a href="{{p['link']}}" target="_blank">{{p['name']}}</a></td>
+                    <td>{{p['model']}}</td>
+                    <td>{{p['pincode']}}</td>
+                    <td>
+                        {% if status == 'available' %}
+                            <span class="badge bg-success">{{message}}</span>
+                        {% elif status == 'unavailable' %}
+                            <span class="badge bg-danger">{{message}}</span>
+                        {% elif status == 'error' %}
+                            <span class="badge bg-warning text-dark">{{message}}</span>
+                        {% elif status == 'disabled' %}
+                            <span class="badge bg-secondary">{{message}}</span>
+                        {% else %}
+                            <span class="badge bg-info text-dark">{{message}}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <form method="post" action="{{ url_for('toggle_product', model=p['model']) }}" style="display:inline">
+                            {% if p['enabled'] %}
+                                <button class="btn btn-sm btn-warning">Disable</button>
+                            {% else %}
+                                <button class="btn btn-sm btn-success">Enable</button>
+                            {% endif %}
+                        </form>
+                        <form method="post" action="{{ url_for('delete_product', model=p['model']) }}" style="display:inline">
+                            <button class="btn btn-sm btn-danger">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    </body>
+    </html>
+    """
+    return render_template_string(template, products=products, latest_status=latest_status)
+
+
+@app.route("/delete/<model>", methods=["POST"])
+def delete_product(model):
     products = load_products()
-    new_product = {
-        "name": request.form["name"],
-        "model": request.form["model"],
-        "link": request.form["link"],
-        "pincode": request.form["pincode"],
-        "enabled": True
-    }
-    products.append(new_product)
+    products = [p for p in products if p["model"] != model]
     save_products(products)
     return redirect(url_for("index"))
 
-@app.route("/delete/<int:product_id>", methods=["POST"])
-def delete_product(product_id):
+
+@app.route("/toggle/<model>", methods=["POST"])
+def toggle_product(model):
     products = load_products()
-    if 0 <= product_id < len(products):
-        products.pop(product_id)
-        save_products(products)
+    for p in products:
+        if p["model"] == model:
+            p["enabled"] = not p.get("enabled", True)
+    save_products(products)
     return redirect(url_for("index"))
 
-@app.route("/toggle/<int:product_id>", methods=["POST"])
-def toggle_product(product_id):
-    products = load_products()
-    if 0 <= product_id < len(products):
-        products[product_id]["enabled"] = not products[product_id].get("enabled", True)
-        save_products(products)
-    return redirect(url_for("index"))
 
-# ---------------- Run ----------------
+# ==========================
+# Run App
+# ==========================
 if __name__ == "__main__":
     threading.Thread(target=background_checker, daemon=True).start()
     app.run(host="0.0.0.0", port=5001, debug=True)
