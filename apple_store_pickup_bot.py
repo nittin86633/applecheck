@@ -1,33 +1,25 @@
 #!/usr/bin/env python3
 """
-Apple Store Pickup Checker (India)
-
-PIN code is fixed to 110001 (Delhi).
-Model numbers/SKUs will be read from a config file (models.txt).
-
-Usage:
-    python apple_store_pickup_bot.py
-
-Config file format (models.txt):
-    Each line should contain one model number/SKU, e.g.:
-    MPXV3HN/A
-    MKU63HN/A
-
-Note: This script calls Apple's website just like a browser would. Please use
-it responsibly and avoid aggressive polling.
+Apple Store Pickup Checker (India) - Web UI + Telegram Notifications
+Runs on port 5001
 """
-from __future__ import annotations
 
+import os
 import json
-import sys
-from typing import Dict, List, Any
-
+import time
+import threading
 import requests
+from flask import Flask, render_template_string, request, redirect, url_for
 
-# Fixed to India store
+# ==========================
+# Config
+# ==========================
 BASE_URL = "https://www.apple.com/in/shop/fulfillment-messages"
-PINCODE = "110001"  # Fixed pincode
-CONFIG_FILE = "models.txt"
+PRODUCTS_FILE = "products.json"
+
+# Telegram config (fill your values here)
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+CHAT_ID = "YOUR_CHAT_ID"
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -39,119 +31,148 @@ DEFAULT_HEADERS = {
     "Referer": "https://www.apple.com/",
 }
 
+# ==========================
+# Helpers
+# ==========================
+def load_products():
+    if not os.path.exists(PRODUCTS_FILE):
+        return []
+    with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-def load_models(config_file: str = CONFIG_FILE) -> List[str]:
-    """Load model numbers from a config file."""
+def save_products(products):
+    with open(PRODUCTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(products, f, indent=2, ensure_ascii=False)
+
+def send_telegram_message(text):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        with open(config_file, "r", encoding="utf-8") as f:
-            models = [line.strip() for line in f if line.strip() and not line.startswith("#")]
-        return models
-    except FileNotFoundError:
-        print(f"Config file '{config_file}' not found. Please create it and add model SKUs.")
-        sys.exit(1)
+        requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    except Exception as e:
+        print("Telegram error:", e)
 
-
-def fetch_availability(pincode: str, models: List[str], timeout: int = 20) -> Dict[str, Any]:
-    params = {
-        "searchNearby": "true",
-        "location": pincode,
-        "pl": "true",
-        "mt": "compact",
-    }
-    for idx, sku in enumerate(models):
-        params[f"parts.{idx}"] = sku
-
+def fetch_availability(pincode, model, timeout=20):
+    params = {"searchNearby": "true", "location": pincode, "pl": "true", "mt": "compact"}
+    params["parts.0"] = model
     resp = requests.get(BASE_URL, params=params, headers=DEFAULT_HEADERS, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
-
-def parse_pickup_status(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def parse_pickup_status(data):
     try:
         stores = data["body"]["content"]["pickupMessage"]["stores"]
     except Exception:
         stores = []
 
-    results: List[Dict[str, Any]] = []
-
+    results = []
     for store in stores:
-        store_num = store.get("storeNumber") or store.get("storeId")
         store_name = store.get("storeName") or store.get("name")
         city = store.get("city") or store.get("storeCity")
-        distance = store.get("retailStore", {}).get("distance") or store.get("distance")
         per_sku = store.get("partsAvailability", {})
         for sku, info in per_sku.items():
             pickup_display = info.get("pickupDisplay") or info.get("pickupType")
             quote = info.get("pickupSearchQuote") or info.get("messageTypes", {}).get("availability", {}).get("storeSelectionEnabledMessage")
             results.append(
                 {
-                    "storeNumber": store_num,
-                    "storeName": store_name,
+                    "store": store_name,
                     "city": city,
-                    "distance": distance,
                     "model": sku,
                     "pickupDisplay": str(pickup_display).lower() if isinstance(pickup_display, str) else pickup_display,
                     "quote": quote,
                 }
             )
-
     return results
 
-
-def check(pincode: str, models: List[str]) -> List[Dict[str, Any]]:
-    data = fetch_availability(pincode, models)
-    rows = parse_pickup_status(data)
-
-    wanted = set(models)
-    priority = {"available": 0, "available_today": 0, "in_stock": 0, "unavailable": 1, None: 2}
-    rows = [r for r in rows if r.get("model") in wanted]
-    rows.sort(key=lambda r: (priority.get(r.get("pickupDisplay"), 1), r.get("distance") or 1e9))
-    return rows
-
-
-def main():
-    models = load_models()
-    if not models:
-        print("No models found in config file.")
-        return 1
-
-    try:
-        rows = check(PINCODE, models)
-
-        if not rows:
-            print("No nearby Apple Stores returned for this PIN/model combination.")
-            return 1
-
-        widths = {
-            "store": 26,
-            "city": 14,
-            "model": 14,
-            "status": 12,
-        }
-        header = f"{'Store':{widths['store']}}  {'City':{widths['city']}}  {'Model':{widths['model']}}  {'Status':{widths['status']}}  Message"
-        print(header)
-        print("-" * len(header))
-        for r in rows:
-            store = f"{r.get('storeName') or ''} ({r.get('storeNumber') or ''})"
-            city = r.get("city") or ""
-            model = r.get("model") or ""
-            status = (r.get("pickupDisplay") or "").upper()
-            msg = r.get("quote") or ""
-            print(f"{store:{widths['store']}}  {city:{widths['city']}}  {model:{widths['model']}}  {status:{widths['status']}}  {msg}")
-
-        return 0
-    except requests.HTTPError as e:
-        print(f"HTTP error: {e}")
-        if e.response is not None:
+# ==========================
+# Background Checker Thread
+# ==========================
+def background_checker():
+    while True:
+        products = load_products()
+        for product in products:
             try:
-                print(e.response.text[:400])
-            except Exception:
-                pass
-        return 2
-    except Exception as e:
-        print(f"Error: {e}")
-        return 3
+                data = fetch_availability(product["pincode"], product["model"])
+                rows = parse_pickup_status(data)
+                for r in rows:
+                    status = f"{product['name']} ({product['model']}) @ {r['store']} [{r['city']}] → {r['pickupDisplay'].upper()} : {r['quote']}\n{product['link']}"
+                    print(status)
+                    if r["pickupDisplay"] == "available":
+                        send_telegram_message("✅ IN STOCK!\n" + status)
+            except Exception as e:
+                print("Error checking:", product, e)
+            time.sleep(2)  # 2 second gap per product
 
+# ==========================
+# Flask App
+# ==========================
+app = Flask(__name__)
 
+@app.route("/", methods=["GET", "POST"])
+def index():
+    products = load_products()
+
+    if request.method == "POST":
+        # Add new product
+        name = request.form.get("name").strip()
+        model = request.form.get("model").strip()
+        link = request.form.get("link").strip()
+        pincode = request.form.get("pincode").strip()
+        products.append({"name": name, "model": model, "link": link, "pincode": pincode})
+        save_products(products)
+        return redirect(url_for("index"))
+
+    template = """
+    <!doctype html>
+    <html>
+    <head>
+        <title>Apple Pickup Checker</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 40px; }
+            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+            th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+            th { background: #f2f2f2; }
+            .form-section { margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; }
+        </style>
+    </head>
+    <body>
+        <h1>Apple Store Pickup Checker (India)</h1>
+        <div class="form-section">
+            <form method="post">
+                <label>Product Name: <input type="text" name="name" required></label><br><br>
+                <label>Model No (SKU): <input type="text" name="model" required></label><br><br>
+                <label>Product Link: <input type="url" name="link" required></label><br><br>
+                <label>Pincode: <input type="text" name="pincode" required></label><br><br>
+                <button type="submit">Add Product</button>
+            </form>
+        </div>
+
+        <h2>Saved Products</h2>
+        <table>
+            <tr>
+                <th>Name</th>
+                <th>Model</th>
+                <th>Link</th>
+                <th>Pincode</th>
+            </tr>
+            {% for p in products %}
+            <tr>
+                <td>{{p.name}}</td>
+                <td>{{p.model}}</td>
+                <td><a href="{{p.link}}" target="_blank">View</a></td>
+                <td>{{p.pincode}}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </body>
+    </html>
+    """
+    return render_template_string(template, products=products)
+
+# ==========================
+# Run App
+# ==========================
 if __name__ == "__main__":
-    sys.exit(main())
+    threading.Thread(target=background_checker, daemon=True).start()
+    app.run(host="0.0.0.0", port=5001, debug=True)
