@@ -17,15 +17,12 @@ from flask import Flask, render_template_string, request, redirect, url_for
 BASE_URL = "https://www.apple.com/in/shop/fulfillment-messages"
 PRODUCTS_FILE = "products.json"
 
-# Telegram config (fill with your details)
+# Telegram config
 TELEGRAM_TOKEN = "8174420585:AAEJwd6t6iLW8DmzTySOM70AAzO5vqfoflc"
 CHAT_ID = "884634752"
-
 DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
     "Accept": "application/json, text/javascript, */*; q=0.01",
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://www.apple.com/",
@@ -33,6 +30,7 @@ DEFAULT_HEADERS = {
 
 # In-memory cache for latest statuses
 latest_status = {}
+
 
 # ==========================
 # Helpers
@@ -43,9 +41,11 @@ def load_products():
     with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
+
 def save_products(products):
     with open(PRODUCTS_FILE, "w", encoding="utf-8") as f:
         json.dump(products, f, indent=2, ensure_ascii=False)
+
 
 def send_telegram_message(text):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -56,12 +56,14 @@ def send_telegram_message(text):
     except Exception as e:
         print("Telegram error:", e)
 
+
 def fetch_availability(pincode, model, timeout=20):
     params = {"searchNearby": "true", "location": pincode, "pl": "true", "mt": "compact"}
     params["parts.0"] = model
     resp = requests.get(BASE_URL, params=params, headers=DEFAULT_HEADERS, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
+
 
 def parse_pickup_status(data):
     try:
@@ -76,7 +78,10 @@ def parse_pickup_status(data):
         per_sku = store.get("partsAvailability", {})
         for sku, info in per_sku.items():
             pickup_display = info.get("pickupDisplay") or info.get("pickupType")
-            quote = info.get("pickupSearchQuote") or info.get("messageTypes", {}).get("availability", {}).get("storeSelectionEnabledMessage")
+            quote = (
+                info.get("pickupSearchQuote")
+                or info.get("messageTypes", {}).get("availability", {}).get("storeSelectionEnabledMessage")
+            )
             results.append(
                 {
                     "store": store_name,
@@ -88,13 +93,18 @@ def parse_pickup_status(data):
             )
     return results
 
+
 # ==========================
-# Background Checker Thread
+# Background Checker
 # ==========================
 def background_checker():
     while True:
         products = load_products()
         for product in products:
+            if not product.get("enabled", True):
+                latest_status[product["model"]] = {"status": "disabled", "message": "Disabled by user"}
+                continue
+
             try:
                 data = fetch_availability(product["pincode"], product["model"])
                 rows = parse_pickup_status(data)
@@ -110,18 +120,15 @@ def background_checker():
                         send_telegram_message(
                             f"✅ IN STOCK!\n{product['name']} ({product['model']})\n{product_msg}\n{product['link']}"
                         )
-                        break  # if available found, stop checking other stores
+                        break
 
-                # Save latest status
-                latest_status[product["model"]] = {
-                    "status": product_status,
-                    "message": product_msg,
-                }
+                latest_status[product["model"]] = {"status": product_status, "message": product_msg}
 
             except Exception as e:
                 latest_status[product["model"]] = {"status": "error", "message": str(e)}
 
             time.sleep(2)  # 2 sec gap per product
+
 
 # ==========================
 # Flask App
@@ -138,7 +145,7 @@ def index():
         model = request.form.get("model").strip()
         link = request.form.get("link").strip()
         pincode = request.form.get("pincode").strip()
-        products.append({"name": name, "model": model, "link": link, "pincode": pincode})
+        products.append({"name": name, "model": model, "link": link, "pincode": pincode, "enabled": True})
         save_products(products)
         return redirect(url_for("index"))
 
@@ -147,60 +154,89 @@ def index():
     <html>
     <head>
         <title>Apple Pickup Checker</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
-            th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-            th { background: #f2f2f2; }
-            .available { color: green; font-weight: bold; }
-            .unavailable { color: red; font-weight: bold; }
-            .error { color: orange; font-weight: bold; }
-            .form-section { margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; }
-        </style>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
     </head>
-    <body>
-        <h1>Apple Store Pickup Checker (India)</h1>
-        <div class="form-section">
-            <form method="post">
-                <label>Product Name: <input type="text" name="name" required></label><br><br>
-                <label>Model No (SKU): <input type="text" name="model" required></label><br><br>
-                <label>Product Link: <input type="url" name="link" required></label><br><br>
-                <label>Pincode: <input type="text" name="pincode" required></label><br><br>
-                <button type="submit">Add Product</button>
-            </form>
+    <body class="bg-light">
+    <div class="container py-4">
+        <h1 class="mb-4">🍎 Apple Store Pickup Checker (India)</h1>
+
+        <div class="card mb-4">
+            <div class="card-header">➕ Add New Product</div>
+            <div class="card-body">
+                <form method="post" class="row g-3">
+                    <div class="col-md-3">
+                        <input class="form-control" placeholder="Product Name" name="name" required>
+                    </div>
+                    <div class="col-md-3">
+                        <input class="form-control" placeholder="Model No (SKU)" name="model" required>
+                    </div>
+                    <div class="col-md-3">
+                        <input class="form-control" placeholder="Product Link" name="link" required>
+                    </div>
+                    <div class="col-md-2">
+                        <input class="form-control" placeholder="Pincode" name="pincode" required>
+                    </div>
+                    <div class="col-md-1">
+                        <button class="btn btn-primary w-100">Add</button>
+                    </div>
+                </form>
+            </div>
         </div>
 
-        <h2>Saved Products</h2>
-        <table>
-            <tr>
-                <th>Name</th>
-                <th>Model</th>
-                <th>Link</th>
-                <th>Pincode</th>
-                <th>Current Status</th>
-                <th>Action</th>
-            </tr>
+        <h2>📦 Saved Products</h2>
+        <table class="table table-bordered table-hover bg-white">
+            <thead class="table-light">
+                <tr>
+                    <th>Name</th>
+                    <th>Model</th>
+                    <th>Pincode</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
             {% for p in products %}
-            <tr>
-                <td>{{p.name}}</td>
-                <td>{{p.model}}</td>
-                <td><a href="{{p.link}}" target="_blank">View</a></td>
-                <td>{{p.pincode}}</td>
-                <td class="{{latest_status.get(p.model, {}).get('status', 'unknown')}}">
-                    {{latest_status.get(p.model, {}).get('message', 'Checking...')}}
-                </td>
-                <td>
-                    <form method="post" action="{{ url_for('delete_product', model=p.model) }}">
-                        <button type="submit">Delete</button>
-                    </form>
-                </td>
-            </tr>
+                {% set status = latest_status.get(p.model, {}).get('status', 'checking') %}
+                {% set message = latest_status.get(p.model, {}).get('message', 'Checking...') %}
+                <tr>
+                    <td><a href="{{p.link}}" target="_blank">{{p.name}}</a></td>
+                    <td>{{p.model}}</td>
+                    <td>{{p.pincode}}</td>
+                    <td>
+                        {% if status == 'available' %}
+                            <span class="badge bg-success">{{message}}</span>
+                        {% elif status == 'unavailable' %}
+                            <span class="badge bg-danger">{{message}}</span>
+                        {% elif status == 'error' %}
+                            <span class="badge bg-warning text-dark">{{message}}</span>
+                        {% elif status == 'disabled' %}
+                            <span class="badge bg-secondary">{{message}}</span>
+                        {% else %}
+                            <span class="badge bg-info text-dark">{{message}}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <form method="post" action="{{ url_for('toggle_product', model=p.model) }}" style="display:inline">
+                            {% if p.enabled %}
+                                <button class="btn btn-sm btn-warning">Disable</button>
+                            {% else %}
+                                <button class="btn btn-sm btn-success">Enable</button>
+                            {% endif %}
+                        </form>
+                        <form method="post" action="{{ url_for('delete_product', model=p.model) }}" style="display:inline">
+                            <button class="btn btn-sm btn-danger">Delete</button>
+                        </form>
+                    </td>
+                </tr>
             {% endfor %}
+            </tbody>
         </table>
+    </div>
     </body>
     </html>
     """
     return render_template_string(template, products=products, latest_status=latest_status)
+
 
 @app.route("/delete/<model>", methods=["POST"])
 def delete_product(model):
@@ -208,6 +244,17 @@ def delete_product(model):
     products = [p for p in products if p["model"] != model]
     save_products(products)
     return redirect(url_for("index"))
+
+
+@app.route("/toggle/<model>", methods=["POST"])
+def toggle_product(model):
+    products = load_products()
+    for p in products:
+        if p["model"] == model:
+            p["enabled"] = not p.get("enabled", True)
+    save_products(products)
+    return redirect(url_for("index"))
+
 
 # ==========================
 # Run App
