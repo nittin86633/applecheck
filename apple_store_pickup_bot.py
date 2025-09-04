@@ -239,7 +239,7 @@ def index():
     return render_template_string(template, products=products, latest_status=latest_status)
 
 
-@app.route("/delete/<model>", methods=["POST"])
+@app.route("/delete/<path:model>", methods=["POST"])
 def delete_product(model):
     products = load_products()
     products = [p for p in products if p["model"] != model]
@@ -247,7 +247,7 @@ def delete_product(model):
     return redirect(url_for("index"))
 
 
-@app.route("/toggle/<model>", methods=["POST"])
+@app.route("/toggle/<path:model>", methods=["POST"])
 def toggle_product(model):
     products = load_products()
     for p in products:
