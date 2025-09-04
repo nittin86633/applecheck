@@ -30,7 +30,12 @@ def check_availability(product):
         stores = response.get("body", {}).get("content", {}).get("pickupMessage", {}).get("stores", [])
         if not stores:
             return "❌ Not Available"
-        available = any(store.get("partsAvailability", {}).get(product['model'], {}).get("pickupDisplay") == "available" for store in stores)
+        available = any(
+            store.get("partsAvailability", {})
+                 .get(product['model'], {})
+                 .get("pickupDisplay") == "available"
+            for store in stores
+        )
         return "✅ Available" if available else "❌ Not Available"
     except Exception as e:
         return f"Error: {e}"
@@ -39,11 +44,14 @@ def send_telegram_message(text):
     if not BOT_TOKEN or not CHAT_ID:
         return
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={
-            "chat_id": CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML"
-        })
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data={
+                "chat_id": CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML"
+            }
+        )
     except Exception as e:
         print("Telegram error:", e)
 
@@ -54,13 +62,18 @@ def background_checker():
     global last_status
     while True:
         products = load_products()
-        for idx, p in enumerate(products):
+        for p in products:
             if not p.get("enabled", True):
                 continue
 
             status = check_availability(p)
             if status == "✅ Available" and last_status.get(p["model"]) != "✅ Available":
-                message = f"📢 <b>{p['name']}</b> is now <b>Available</b>!\n\nLink: {p['link']}\nModel: {p['model']}\nPincode: {p['pincode']}"
+                message = (
+                    f"📢 <b>{p['name']}</b> is now <b>Available</b>!\n\n"
+                    f"🔗 {p['link']}\n"
+                    f"📦 Model: {p['model']}\n"
+                    f"📍 Pincode: {p['pincode']}"
+                )
                 send_telegram_message(message)
 
             last_status[p["model"]] = status
@@ -108,6 +121,7 @@ def toggle_product(product_id):
         save_products(products)
     return redirect(url_for("index"))
 
+# ---------------- Run ----------------
 if __name__ == "__main__":
     threading.Thread(target=background_checker, daemon=True).start()
-    app.run(port=5001, debug=True)
+    app.run(host="0.0.0.0", port=5001, debug=True)
