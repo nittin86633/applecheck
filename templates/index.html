@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Apple Store Pickup Checker</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+  <div class="container py-4">
+    <h2 class="mb-4 text-center">🍏 Apple Store Pickup Checker</h2>
+
+    <!-- Add Product Form -->
+    <div class="card shadow-sm mb-4">
+      <div class="card-body">
+        <h5 class="card-title">Add New Product</h5>
+        <form method="POST" action="/add" class="row g-3">
+          <div class="col-md-3">
+            <input type="text" name="name" class="form-control" placeholder="Product Name" required>
+          </div>
+          <div class="col-md-3">
+            <input type="text" name="model" class="form-control" placeholder="Model Number" required>
+          </div>
+          <div class="col-md-3">
+            <input type="url" name="link" class="form-control" placeholder="Product Link" required>
+          </div>
+          <div class="col-md-2">
+            <input type="text" name="pincode" class="form-control" placeholder="Pincode" required>
+          </div>
+          <div class="col-md-1 d-grid">
+            <button type="submit" class="btn btn-success">Add</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Product Table -->
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <h5 class="card-title">Product List</h5>
+        <table class="table table-bordered table-hover align-middle text-center">
+          <thead class="table-dark">
+            <tr>
+              <th>#</th>
+              <th>Name</th>
+              <th>Model</th>
+              <th>Link</th>
+              <th>Pincode</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for p in products %}
+            <tr class="{% if p.status == '✅ Available' %}table-success{% elif p.status == '❌ Not Available' %}table-danger{% elif p.status == '⏸ Disabled' %}table-secondary{% endif %}">
+              <td>{{ loop.index }}</td>
+              <td>{{ p.name }}</td>
+              <td>{{ p.model }}</td>
+              <td><a href="{{ p.link }}" target="_blank">View</a></td>
+              <td>{{ p.pincode }}</td>
+              <td>{{ p.status }}</td>
+              <td>
+                <form action="/toggle/{{ loop.index0 }}" method="post" style="display:inline;">
+                  <button class="btn btn-warning btn-sm">
+                    {% if p.enabled %}Disable{% else %}Enable{% endif %}
+                  </button>
+                </form>
+                <form action="/delete/{{ loop.index0 }}" method="post" style="display:inline;">
+                  <button class="btn btn-danger btn-sm">Delete</button>
+                </form>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>
